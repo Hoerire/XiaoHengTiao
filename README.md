@@ -165,22 +165,22 @@ isTaskInMiniFlexible(task) == true → return
 ⚠ `isTaskOnFlexibleMinimized(Task)` 不是 mini 语义，其字节码是
 `FlexibleWindowManagerService.getInstance(null).getFirstTaskId() == task.mTaskId`（是否全屏首个 task），恒为 false。
 
-**② 用户刚手动缩放过 → 交系统**
+**② 用户手动缩放过 → 交系统**
 
-两条证据，任一成立即视为"用户还要继续看"：
+```kotlin
+val scale = extScale(task)   // task.getWrapper().getExtImpl().getScale()
+if (!imeVisible && scale != null && shrunkScale(task, scale)) return
+```
+`shrunkScale` 与该 task **见过的最大 scale** 比较（弱引用按 task 实例记录），小于 97% 判为缩小：
+物理缩放系数不受窗口位置/平移影响，重开窗口回到默认比例即自动恢复。
 
-- **事件驱动**：hook `FlexibleTaskScaleManager` 中**参数含 `MotionEvent`** 的方法
-  （`endMultiRatioScaleHandleInAnimHandler(MotionEvent, Task, int, float[], Point)`、
-  `updateMultiRatioScaleFinalPosInAnimHandler(MotionEvent, Task, float, Point, int)` 等），
-  命中后用 `WeakHashMap<task, timestamp>` 记录，30 秒内有效
-- **面积兜底**：`WeakHashMap<task, maxArea>`，当前可见面积 < 该 task 见过的最大面积 97%
+⚠ 三种被实测否掉的判定方式：
 
-⚠ 三个已踩过的坑：
-
-- 不能按「参数含 `Task`」筛方法：`resetFlexibleTaskScaleState`（关窗重置）、
-  `startSameRatioScaleSpringAnimation`（打开/布局动画）都带 Task → 开关窗被误判为用户缩放 → 第二次打开就关不掉
-- 不能用 `getFlexibleTaskCurrRatio(task)`：本机固定返回 `1.7775158`，默认态与缩放态完全相同，不是窗口比例
-- 不能用 `taskId` 记面积：`taskId` 会被系统复用、不同 app 默认尺寸不同（实测 1848240 vs 2167152）→ 基准必然失准
+- **面积记忆**（按 taskId 记录可见矩形面积）：位置/比例微变、task 复用都会让基准失准
+  → 表现为「缩小过一次，之后每次打开都关不掉」
+- **缩放事件标记**（hook `FlexibleTaskScaleManager` 里带 `MotionEvent` 的方法）：`startUpdateSameRatioFinalPosInAnimHandler`、
+  `endSameRatioHandleInAnimHandler` 是**动画回调**，打开/切换尺寸时同样会触发，标记被误刷 → 刚打开就判「缩放态」
+- **`getFlexibleTaskCurrRatio(task)`**：本机固定返回 `1.7775158`，默认态与缩放态完全相同，不是窗口比例
 
 **③ 点在窗内 → 不干预**
 
@@ -200,13 +200,22 @@ val ime = fieldOf(dc, "mInputMethodWindow")       // 独立 WindowState，坐标
 ime.isVisible() && ime.getFrame().contains(x, y)  // → 键盘上，不关
 ```
 
-**⑤ 关闭 + 防穿透**
+**⑤ 关闭 + 防穿透（含返回手势放行）**
 
 ```kotlin
-cancelCurrentTouch(ctl)                              // 先撤当前手势
-invoke(ctl, "exitFlexibleTask", task, false, 0, 0)   // 再关窗
-param.returnEarly = true                             // 不跑原生 QuickFold 逻辑
+// 边缘起手（距左右边缘 < 24dp）视为系统返回手势，完全放行：不 cancel、不关闭
+if (startX < edgePx || startX > screenW - edgePx) return
+
+cancelCurrentTouch(ctl)                              // 必须立即，不能延迟
+invoke(ctl, "exitFlexibleTask", task, false, 0, 0)
+param.returnEarly = true
 ```
+
+- `cancelCurrentTouch` 必须在下层窗口收到 UP **之前**执行，延迟就会穿透
+- 不要「挂起 N 毫秒再决定是否关闭」：同一手势内 `handleTapOutsideTask` 可能被通知多次，
+  单份挂起状态会被后一次覆盖 → 偶发不关闭，同时防穿透失效
+- 边缘判定用 DOWN 起手点：`TouchListener#onPointerEvent` 记录 `downX`，
+  只在 DOWN 后 400ms 内视为新鲜，否则退回用通知坐标，避免上一次手势的 `downX` 残留误判
 
 ### 3.5 关闭 API
 
@@ -247,11 +256,13 @@ FlexibleTaskController.exitFlexibleTask(Task task, boolean exitFreeFormStack,
 
 ### 3.7 hook 面
 
-只挂三类，避免在 system_server 留大量拦截点：
+只挂两个类的少量方法，避免在 system_server 留大量拦截点：
 
-1. `FlexibleTaskController#handleTapOutsideTask`（功能本体）
-2. `FlexibleTaskScaleManager` 中参数含 `MotionEvent` 的方法（缩放标记）
-3. 无其它日志型 hook；常规分支日志为 `XLog.d`，受 `log_verbose` 门控，调用栈只在 verbose 时构造
+1. `FlexibleTaskController#handleTapOutsideTask` —— 功能本体（点外入口）
+2. `FlexibleTaskController$TouchListener#onPointerEvent(MotionEvent)` —— 记录 DOWN 起点，供边缘起手判定
+
+其余日志为 `XLog.i`（关闭/缩小/边缘三条主路径），`XLog.d` 受配置 `log_verbose` 门控；
+调用栈只在 verbose 时构造。
 
 ---
 
