@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 图标背景：从原图四角采样出的主蓝色（纯色填充，避免放大插值产生毛刺） -->
+    <color name="ic_side_index_bg">#FF16A7FD</color>
+</resources>
