@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- 配置通道写入系统设置库；可用 pm grant / root 授予，未授予时退化成 su 命令 -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+    <!-- 读取前台应用（只有 SystemUI 侧反射 ActivityTaskManager 失败时才用，需要 appops 授权） -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@drawable/ic_side_index"
+        android:label="@string/app_name"
+        android:description="@string/app_description"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <!-- 配置读取通道（跨应用免权限调用；SystemUI 承载模式下优先走 Settings.Secure） -->
+
+        <!-- LibXposed API 102：向管理器暴露模块信息（名称/版本/作者/描述） -->
+        <provider
+            android:name="io.github.libxposed.service.XposedProvider"
+            android:authorities="io.github.hoerire.sideindexx.XposedService"
+            android:exported="true" />
+
+        <!-- ============ LSPosed / LibXposed 模块声明 ============ -->
+        <!-- 入口类名与 API 版本在 META-INF/xposed/ 下（module.prop / java_init.list / scope.list），
+             打包脚本在 zipalign 之前塞进 APK 根 —— aapt 打不进 META-INF。 -->
+        <meta-data android:name="xposedmodule" android:value="true" />
+        <meta-data android:name="xposeddescription" android:value="@string/xposed_description" />
+        <!-- LibXposed API 102 要求框架版本 ≥ 93；低于这个版本的 LSPosed 不认新模块格式 -->
+        <meta-data android:name="xposedminversion" android:value="93" />
+        <meta-data android:name="xposedscope" android:resource="@array/xposed_scope" />
+        <meta-data android:name="xposedsharedprefs" android:value="true" />
+    </application>
+</manifest>
