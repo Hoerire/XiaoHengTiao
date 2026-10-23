@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">小横条增强</string>
+    <string name="xposed_description">屏蔽 ColorOS 小横条左右切换最近应用 改为底部浮窗展示最近/固定应用 优化小窗点外关闭（防穿透、规避输入法）</string>
+    <string name="app_description">屏蔽 ColorOS 小横条左右切换最近应用 改为底部浮窗展示最近/固定应用 优化小窗点外关闭（防穿透、规避输入法）</string>
+</resources>
