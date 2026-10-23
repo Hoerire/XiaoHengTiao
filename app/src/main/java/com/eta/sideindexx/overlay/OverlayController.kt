@@ -24,6 +24,8 @@ import com.eta.sideindexx.config.SecureConfigChannel
 import com.eta.sideindexx.util.Display
 import com.eta.sideindexx.util.Haptics
 import com.eta.sideindexx.util.XLog
+import de.robv.android.xposed.XC_MethodHook
+import de.robv.android.xposed.XposedBridge
 
 /**
  * 底部导航条触发 + 最近应用浮层（唯一入口）。
@@ -64,8 +66,11 @@ class OverlayController(
         running = true
         config = configProvider()
         XLog.i("底栏浮层启动：${config.summary()}")
+        installBackTriggerHook()
         BackGestureGate.onTouch = { e, zone ->
-            if (zone == BackGestureGate.ZONE_BOTTOM) {
+            if (panelVisible && Build.VERSION.SDK_INT < 33 && edgeSwipeDismiss(e)) {
+                // 已由返回手势收起浮层
+            } else if (zone == BackGestureGate.ZONE_BOTTOM) {
                 try {
                     val copy = MotionEvent.obtain(e)
                     handler.post {
@@ -262,6 +267,148 @@ class OverlayController(
 
     // ---------------- 手势 ----------------
 
+    // ---------------- 返回手势收起浮层 ----------------
+
+    /** 边缘起手宽度 */
+    private val edgeDismissPx by lazy { Display.dp(context, 32).toFloat() }
+    /** 水平内滑阈值 */
+    private val edgeSwipeSlopPx by lazy { Display.dp(context, 24).toFloat() }
+
+    private var backGestureArmed = false
+    private var backDownX = 0f
+
+    /** 浮层消费返回手势后的短时窗口：此期间到达的 triggerBack 一律吞掉 */
+    @Volatile private var swallowBackUntil = 0L
+
+    // ---------------- 焦点窗口返回回调（API 33+） ----------------
+
+    private var backInvokedToken: Any? = null
+
+    private fun registerBackCallback(v: View) {
+        if (Build.VERSION.SDK_INT < 33) return
+        unregisterBackCallback(v)
+        backInvokedToken = BackApi33.register(v) {
+            handler.post {
+                if (panelVisible) {
+                    XLog.i("返回键/返回手势 → 收起浮层")
+                    hidePanel(animated = true, reason = "返回")
+                }
+            }
+        }
+    }
+
+    private fun unregisterBackCallback(v: View) {
+        val token = backInvokedToken ?: return
+        backInvokedToken = null
+        if (Build.VERSION.SDK_INT >= 33) BackApi33.unregister(v, token)
+    }
+
+    /** 单独承载 API 33 类型，避免低版本类校验 */
+    private object BackApi33 {
+        fun register(v: View, onBack: () -> Unit): Any? = try {
+            val cb = android.window.OnBackInvokedCallback { onBack() }
+            v.findOnBackInvokedDispatcher()
+                ?.registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT, cb)
+            cb
+        } catch (t: Throwable) {
+            XLog.e("返回回调注册失败", t)
+            null
+        }
+
+        fun unregister(v: View, token: Any) {
+            try {
+                (token as? android.window.OnBackInvokedCallback)?.let {
+                    v.findOnBackInvokedDispatcher()?.unregisterOnBackInvokedCallback(it)
+                }
+            } catch (t: Throwable) {
+                XLog.d("返回回调反注册失败：${t.javaClass.simpleName}")
+            }
+        }
+    }
+
+    /**
+     * 拦截 SystemUI 的返回触发点（NavigationEdgeBackPlugin$BackCallback#triggerBack 的实现）：
+     * 浮层可见、或本次手势已被浮层消费 → 收起浮层并吞掉返回，不让下层应用退一级。
+     */
+    private fun installBackTriggerHook() {
+        val cl = context.javaClass.classLoader ?: return
+        val owners = mutableListOf<String>()
+        for (i in 1..40) {
+            owners += "com.android.systemui.navigationbar.gestural.EdgeBackGestureHandler\$$i"
+            owners += "com.oplus.systemui.navigationbar.gesture.sidegesture.SideGestureDetector\$$i"
+        }
+        var n = 0
+        for (name in owners) {
+            val c = try { Class.forName(name, false, cl) } catch (t: Throwable) { null } ?: continue
+            for (m in c.declaredMethods) {
+                if (m.name != "triggerBack" || m.parameterTypes.isNotEmpty()) continue
+                try {
+                    m.isAccessible = true
+                    XposedBridge.hookMethod(m, object : XC_MethodHook() {
+                        override fun beforeHookedMethod(param: MethodHookParam) {
+                            try {
+                                val now = SystemClock.uptimeMillis()
+                                val consumed = now <= swallowBackUntil
+                                if (!consumed && !panelVisible) return
+                                swallowBackUntil = now + 900L
+                                param.result = null
+                                if (panelVisible) {
+                                    handler.post {
+                                        if (panelVisible) {
+                                            XLog.i("返回手势：收起浮层并吞掉返回")
+                                            hidePanel(animated = true, reason = "返回手势")
+                                        }
+                                    }
+                                } else {
+                                    XLog.i("返回手势：已吞（浮层刚消费）")
+                                }
+                            } catch (t: Throwable) {
+                                XLog.e("返回手势拦截异常", t)
+                            }
+                        }
+                    })
+                    n++
+                } catch (t: Throwable) {
+                    XLog.d("返回手势拦截：$name 钩取失败 ${t.javaClass.simpleName}")
+                }
+            }
+        }
+        XLog.i("返回手势拦截已装：$n")
+    }
+
+    /**
+     * 浮层可见时，左右边缘起手并水平内滑 = 系统返回手势 → 收起浮层。
+     * 只读事件坐标，不跨线程持有 MotionEvent；收起动作 post 回主线程。
+     */
+    private fun edgeSwipeDismiss(e: MotionEvent): Boolean {
+        val w = context.resources.displayMetrics.widthPixels.toFloat()
+        when (e.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                backDownX = e.x
+                backGestureArmed = e.x <= edgeDismissPx || e.x >= w - edgeDismissPx
+                return false
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!backGestureArmed) return false
+                val dx = e.x - backDownX
+                val inward = if (backDownX <= edgeDismissPx) dx > 0 else dx < 0
+                if (inward && kotlin.math.abs(dx) >= edgeSwipeSlopPx) {
+                    backGestureArmed = false
+                    swallowBackUntil = SystemClock.uptimeMillis() + 900L
+                    XLog.i("浮层：边缘内滑（返回手势）→ 收起")
+                    handler.post { hidePanel(animated = true, reason = "返回手势") }
+                    return true
+                }
+                return false
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                backGestureArmed = false
+                return false
+            }
+            else -> return false
+        }
+    }
+
     private fun handleBottomTouch(event: MotionEvent) {
         if (landscapeNow()) return
         val x = event.x
@@ -372,10 +519,14 @@ class OverlayController(
     private fun setPanelTouchable(touchable: Boolean) {
         val v = panel ?: return
         val lp = v.layoutParams as? WindowManager.LayoutParams ?: return
-        val flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-            WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+        // 可触摸时不给 NOT_FOCUSABLE：让浮层成为焦点窗口，系统返回手势才会派发给它
+        // （配合 OnBackInvokedDispatcher 注册的回调，返回只收浮层、不传到下层应用）
+        val base = WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
             WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED or
-            (if (touchable) 0 else WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+        val flags = if (touchable) base else (base or
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
         if (lp.flags == flags) return
         lp.flags = flags
         try {
@@ -466,6 +617,7 @@ class OverlayController(
             }
         }
         panelVisible = true
+        registerBackCallback(view)
         state = State.ACTIVE
         view.armInputDelay(TOUCHABLE_DELAY_MS)
         handler.removeCallbacks(touchableTask)
@@ -505,6 +657,7 @@ class OverlayController(
         val v = panel ?: return
         state = State.IDLE
         handler.removeCallbacks(touchableTask)
+        if (panelVisible) unregisterBackCallback(v)
         setPanelTouchable(false)
         if (!panelVisible) return
         panelVisible = false
