@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      作用域推荐：只需要「系统界面」。
+      全局索引页由 SystemUI 进程承载（常驻、免后台保活、不需要悬浮窗权限）。
+      不要推荐 android / system（system_server）：模块主动跳过，勾了没有收益且增加风险。
+    -->
+    <string-array name="xposed_scope">
+        <item>com.android.systemui</item>
+        <item>system</item>
+    </string-array>
+</resources>
