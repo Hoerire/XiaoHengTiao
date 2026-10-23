@@ -31,7 +31,6 @@ object WmProbe {
     /** 精简版：只保留功能必需的两类（原来还探了 5 个类、82 个方法） */
     private val CLASSES = arrayOf(
         "FlexibleTaskController",
-        "FlexibleTaskScaleManager",
         "FlexibleTaskController\$TouchListener"
     )
 
@@ -154,14 +153,6 @@ object WmProbe {
                     }
                     continue
                 }
-                if (c.simpleName == "FlexibleTaskScaleManager" && isScaleTouch(m)) {
-                    try {
-                        XposedBridge.hookMethod(m, scaleMarkHook(c.simpleName, m.name))
-                        n++
-                    } catch (t: Throwable) {
-                    }
-                    continue
-                }
                 if (c.simpleName == "FlexibleTaskController" && m.name == "handleTapOutsideTask") {
                     try {
                         XposedBridge.hookMethod(m, tapOutsideHook())
@@ -205,8 +196,11 @@ object WmProbe {
                 val vis = visibleRect(ctl, task)
                 // ①b 用户刚手动缩放过（捕获到缩放手势后 60s 内）：交系统，用户还要继续看
                 //     不用面积猜：taskId 会被系统复用、不同 app 默认尺寸也不同，面积基准必失准
-                if (!imeVisible && (scaledRecently(task) || shrunkVsMax(task, vis))) {
-                    XLog.d("$TAG：点($x,$y) 缩放态 → 交系统")
+                // 缩小判定：用 TaskExtImpl.getScale()（物理缩放系数，不受窗口位置影响、
+                // 也不会被系统的 ...InAnimHandler 动画回调污染），与该 task 见过的最大 scale 比较
+                val scale = extScale(task)
+                if (!imeVisible && scale != null && shrunkScale(task, scale)) {
+                    XLog.i("$TAG：点($x,$y) 缩小态 scale=$scale → 交系统")
                     return
                 }
                 // ② 点在窗内：不干预（含小窗内容区，打字/操作照常）
@@ -221,12 +215,21 @@ object WmProbe {
                     XLog.d("$TAG：点($x,$y) 键盘区 → 不关")
                     return
                 }
-                // 调用栈只在 verbose 时才构造（new Throwable 在 system_server 里不便宜）
+                // 边缘起手 → 系统返回手势，完全放行（不 cancel、不关闭）
+                val edgePx = px(EDGE_START_DP)
+                val screenW = screenWidthPx()
+                val fresh = tracking && downAt > 0 && (android.os.SystemClock.uptimeMillis() - downAt) < 400L
+                val startX = if (fresh) downX else x.toFloat()
+                if (startX < edgePx || startX > screenW - edgePx) {
+                    XLog.i("$TAG：点($x,$y) 边缘起手(${startX.toInt()}) → 交系统返回手势")
+                    return
+                }
+                // 其余点外：立即取消当前手势（防穿透必须在下层收到 UP 之前），再关闭
                 val trace = if (XLog.isVerbose()) " | 栈: ${frames()}" else ""
-                XLog.i("$TAG：点($x,$y) 窗外 vis=$vis → 待确认（单击才关）$trace")
-                // 系统把边缘滑动手势也当作 tap-outside 通知过来，先挂起：
-                // 由 touchHook 观测位移，若判定为滑动（返回手势）则放弃；否则 200ms 后按单击关闭。
-                schedulePendingClose(ctl, task, x, y)
+                val tid = fieldOf(task, "mTaskId") ?: -1
+                XLog.i("$TAG：点($x,$y) 窗外 task=$tid vis=$vis 起手=${startX.toInt()} → 关闭$trace")
+                cancelCurrentTouch(ctl)
+                invoke(ctl, "exitFlexibleTask", task, false, 0, 0)
                 param.returnEarly = true
             } catch (t: Throwable) {
                 XLog.w("$TAG：点外处理异常", t)
@@ -267,14 +270,10 @@ object WmProbe {
 
     // ---------------- 单击 / 滑动 区分 ----------------
 
-    /** 单击最大时长 */
-    private const val CLICK_MAX_MS = 320L
     /** 位移超过该值即视为滑动（返回手势） */
     private const val CLICK_SLOP_DP = 24
     /** 边缘起点宽度（返回手势区） */
     private const val EDGE_START_DP = 24
-    /** 挂起后多久按单击处理 */
-    private const val PENDING_CONFIRM_MS = 200L
 
     @Volatile private var downX = 0f
     @Volatile private var downY = 0f
@@ -285,7 +284,33 @@ object WmProbe {
     private class PendingClose(val ctl: Any, val task: Any, val x: Int, val y: Int, val at: Long)
     @Volatile private var pending: PendingClose? = null
 
-    private val mainHandler by lazy { android.os.Handler(android.os.Looper.getMainLooper()) }
+    /** task 实例（弱引用）→ 见过的最大缩放系数（越接近全屏越大），用于识别"缩小时" */
+    private val maxScale = java.util.WeakHashMap<Any, Float>()
+
+    private fun extScale(task: Any): Float? = try {
+        val wrapper = invoke(task, "getWrapper") ?: return null
+        val ext = invoke(wrapper, "getExtImpl") ?: return null
+        (invoke(ext, "getScale") as? Float)?.takeIf { it > 0f }
+    } catch (t: Throwable) {
+        null
+    }
+
+    /** 当前 scale 明显小于该 task 见过的最大 scale → 用户缩小了 */
+    private fun shrunkScale(task: Any, scale: Float): Boolean {
+        val prev = maxScale[task]
+        if (prev == null || scale > prev) {
+            maxScale[task] = scale
+            return false
+        }
+        return scale < prev * 0.97f
+    }
+
+    /** 主屏宽度（用于边缘起手判定） */
+    private fun screenWidthPx(): Float = try {
+        android.content.res.Resources.getSystem().displayMetrics.widthPixels.toFloat()
+    } catch (t: Throwable) {
+        1080f
+    }
 
     private fun px(dp: Int): Float = try {
         android.content.res.Resources.getSystem().displayMetrics.density * dp
@@ -326,82 +351,6 @@ object WmProbe {
             } catch (t: Throwable) {
             }
         }
-    }
-
-    /** 挂起关闭：等 200ms，期间若判定为滑动则放弃 */
-    private fun schedulePendingClose(ctl: Any, task: Any, x: Int, y: Int) {
-        pending = PendingClose(ctl, task, x, y, android.os.SystemClock.uptimeMillis())
-        mainHandler.postDelayed({
-            val p = pending ?: return@postDelayed
-            pending = null
-            val dur = android.os.SystemClock.uptimeMillis() - p.at
-            val moved = maxDist
-            if (moved > px(CLICK_SLOP_DP)) {
-                XLog.i("$TAG：点($x,$y) 判定滑动（位移 ${moved.toInt()}px）→ 不关闭")
-                return@postDelayed
-            }
-            if (downAt > 0 && p.at - downAt > CLICK_MAX_MS) {
-                XLog.i("$TAG：点($x,$y) 手势过长（${p.at - downAt}ms）→ 不关闭")
-                return@postDelayed
-            }
-            XLog.i("$TAG：点($x,$y) 判定单击（位移 ${moved.toInt()}px, 时长 ${dur}ms）→ 关闭")
-            cancelCurrentTouch(p.ctl)
-            invoke(p.ctl, "exitFlexibleTask", p.task, false, 0, 0)
-        }, PENDING_CONFIRM_MS)
-    }
-
-    /** task 实例（弱引用）→ 最后一次手动缩放的时刻 */
-    private val scaledAt = java.util.WeakHashMap<Any, Long>()
-
-    /** task 实例（弱引用）→ 见过的最大可见面积（IME 不可见时才采样），用于兜底识别"用户缩小" */
-    private val maxArea = java.util.WeakHashMap<Any, Long>()
-
-    /**
-     * 只认**手势驱动**的缩放方法：参数里必须带 MotionEvent。
-     * 不能按 Task 参数筛：`resetFlexibleTaskScaleState`（关窗重置）、
-     * `startSameRatioScaleSpringAnimation`（打开/布局动画）都带 Task，会把开关窗误判成用户缩放。
-     */
-    private fun isScaleTouch(m: java.lang.reflect.Method): Boolean {
-        if (m.isSynthetic || m.name.startsWith("lambda")) return false
-        return m.parameterTypes.any { it.name == "android.view.MotionEvent" }
-    }
-
-    /** 缩放链路任意方法被调用 → 标记该 task 正在被用户缩放 */
-    private fun scaleMarkHook(cls: String, name: String): XC_MethodHook = object : XC_MethodHook() {
-        override fun beforeHookedMethod(param: XC_MethodHook.MethodHookParam) {
-            try {
-                val task = param.args.firstOrNull { arg ->
-                    arg != null && arg.javaClass.name == "com.android.server.wm.Task"
-                } ?: param.thisObject?.let { self ->
-                    fieldOf(self, "mTask")
-                } ?: return
-                scaledAt[task] = android.os.SystemClock.uptimeMillis()
-                if (seen.merge("scale#$cls#$name", 1) { a, _ -> a + 1 } == 1) {
-                    XLog.i("$TAG：缩放标记生效来源 $cls#$name")
-                }
-            } catch (t: Throwable) {
-            }
-        }
-    }
-
-    /** 兜底：当前可见面积小于该 task 见过的最大面积 97% → 视为用户缩小过 */
-    private fun shrunkVsMax(task: Any, vis: Rect?): Boolean {
-        if (vis == null || vis.isEmpty) return false
-        val area = vis.width().toLong() * vis.height().toLong()
-        val prev = maxArea[task]
-        if (prev == null || area > prev) {
-            maxArea[task] = area
-            return false
-        }
-        return area < prev * 97L / 100L
-    }
-
-    /** 缩放手势后多久内视为「用户还要继续看」 */
-    private const val SCALED_KEEP_MS = 30_000L
-
-    private fun scaledRecently(task: Any): Boolean {
-        val at = scaledAt[task] ?: return false
-        return android.os.SystemClock.uptimeMillis() - at < SCALED_KEEP_MS
     }
 
     /**
