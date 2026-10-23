@@ -253,11 +253,12 @@ object BackGestureGate {
                                 val side = trackingZone
                                 trackingZone = 0
                                 bandGestureActive = false
-                                if (side != 0) onTouch?.invoke(e, side)
+                                onTouch?.invoke(e, side)
                                 return
                             }
                         }
-                        if (trackingZone != 0) onTouch?.invoke(e, trackingZone)
+                        // 无条件回调：zone 可能为 0（未设左右带），由消费者自行判断区域
+                        onTouch?.invoke(e, trackingZone)
                     }
                 })
                 n++
