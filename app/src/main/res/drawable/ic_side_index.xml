@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 圆角背景 -->
+    <path
+        android:fillColor="#1B2A4A"
+        android:pathData="M26,0 h56 a26,26 0 0 1 26,26 v56 a26,26 0 0 1 -26,26 h-56 a26,26 0 0 1 -26,-26 v-56 a26,26 0 0 1 26,-26 z" />
+
+    <!-- 应用圆点 3 × 2 -->
+    <path
+        android:fillColor="#7FB0FF"
+        android:pathData="M25,36 a6.5,6.5 0 1,0 13,0 a6.5,6.5 0 1,0 -13,0" />
+    <path
+        android:fillColor="#7FB0FF"
+        android:pathData="M47.5,36 a6.5,6.5 0 1,0 13,0 a6.5,6.5 0 1,0 -13,0" />
+    <path
+        android:fillColor="#7FB0FF"
+        android:pathData="M70,36 a6.5,6.5 0 1,0 13,0 a6.5,6.5 0 1,0 -13,0" />
+    <path
+        android:fillColor="#4166C4"
+        android:pathData="M25,55 a6.5,6.5 0 1,0 13,0 a6.5,6.5 0 1,0 -13,0" />
+    <path
+        android:fillColor="#4166C4"
+        android:pathData="M47.5,55 a6.5,6.5 0 1,0 13,0 a6.5,6.5 0 1,0 -13,0" />
+    <path
+        android:fillColor="#4166C4"
+        android:pathData="M70,55 a6.5,6.5 0 1,0 13,0 a6.5,6.5 0 1,0 -13,0" />
+
+    <!-- 底部小白条 -->
+    <path
+        android:fillColor="#F2F5FF"
+        android:pathData="M37,74 h34 a5.5,5.5 0 0 1 5.5,5.5 a5.5,5.5 0 0 1 -5.5,5.5 h-34 a5.5,5.5 0 0 1 -5.5,-5.5 a5.5,5.5 0 0 1 5.5,-5.5 z" />
+</vector>
