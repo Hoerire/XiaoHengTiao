@@ -1,0 +1,7 @@
+-dontobfuscate
+-dontoptimize
+-dontwarn **
+-keepattributes *
+-keep class com.eta.sideindexx.** { *; }
+-keep class kotlin.Metadata { *; }
+-keep class io.github.libxposed.service.** { *; }
